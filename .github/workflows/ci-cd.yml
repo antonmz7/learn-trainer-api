@@ -1,0 +1,98 @@
+name: CI/CD
+
+# Триггер: запускать на push в ветку main
+on:
+  push:
+    branches: [main]
+
+# Глобальные переменные окружения
+env:
+  IMAGE_NAME: antonmz7/learn-trainer-api
+  IMAGE_TAG: latest
+
+jobs:
+  # ============================================
+  # JOB 1: Lint & Test
+  # Проверяем, что код чистый и тесты проходят
+  # ============================================
+  test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run tests
+        run: npm run test
+
+  # ============================================
+  # JOB 2: Build & Push Docker image
+  # Собираем образ и пушим в Docker Hub
+  # ============================================
+  build:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    needs: test  # Запускается только если test прошёл
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ============================================
+  # JOB 3: Deploy to server
+  # SSH на сервер, обновление контейнера
+  # ============================================
+  deploy:
+    name: Deploy to Server
+    runs-on: ubuntu-latest
+    needs: build  # Запускается только если build прошёл
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            docker pull antonmz7/learn-trainer-api:latest
+            docker stop lt-api || true
+            docker rm lt-api || true
+            docker run -d \
+              --name lt-api \
+              -p 3001:3000 \
+              --restart unless-stopped \
+              antonmz7/learn-trainer-api:latest
+            docker image prune -f
